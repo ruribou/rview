@@ -1,0 +1,22 @@
+[package]
+name = "rview"
+version = "0.1.0"
+edition = "2024"
+description = "Organize git diffs into review-oriented categories (DB / API / Logic / Test / Config)"
+license = "MIT"
+repository = "https://github.com/ruribou/rview"
+readme = "README.md"
+keywords = ["git", "diff", "code-review", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
