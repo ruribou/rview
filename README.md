@@ -181,8 +181,9 @@ Test → DB → API → Logic → Config の順に評価し、最初にマッチ
 
 Gitの変更ファイルを取得して分類する。
 
-```text
-Git → diff取得 → parse → categorize → terminal output
+```mermaid
+flowchart LR
+    Git --> D["diff取得"] --> P["parse"] --> C["categorize"] --> O["terminal output"]
 ```
 
 ### Phase 2 — Diff Analyzer ✅
@@ -192,6 +193,16 @@ Git → diff取得 → parse → categorize → terminal output
 ### Phase 3 — Framework Awareness
 
 Railsなどのフレームワーク構造を理解し、Controller → Service → Model → Test といった関連ファイルを探索する。
+
+```mermaid
+flowchart LR
+    Controller --> Service --> Model
+    Controller -.- CS["Controller spec"]
+    Service -.- SS["Service spec"]
+    Model -.- MS["Model spec"]
+```
+
+これにより、関連ファイルの変更状況を次のように提示できるようにする。
 
 ```text
 Controller changed
@@ -212,8 +223,9 @@ Pull Requestの変更を取得し、ローカルと同じ解析処理を適用�
 
 Pull Request全体をそのままLLMへ送信するのではなく、
 
-```text
-Git Diff → Rustによる解析 → 変更のグルーピング → 重要ファイル抽出 → 関連diff抽出 → LLM
+```mermaid
+flowchart LR
+    G["Git Diff"] --> R["Rustによる解析"] --> Gr["変更のグルーピング"] --> I["重要ファイル抽出"] --> E["関連diff抽出"] --> L["LLM"]
 ```
 
 という構成で、LLMへ渡す情報量を減らしながらレビュー精度を高める。

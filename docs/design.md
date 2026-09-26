@@ -8,25 +8,30 @@
 
 ## パイプライン
 
-```text
-                analysis::collect  (analysis.rs)  ── I/O はここと git.rs だけ
-  ┌───────────────────────────────────────────────────────────────────┐
-  │ git diff --name-status -z BASE...HEAD → diff::parse_name_status   │ Vec<FileChange>
-  │ git diff -U0 BASE...HEAD              → patch::parse_patch        │ Vec<FileDiff>
-  │ git merge-base / git cat-file blob    → 変更前後のファイル全文       │
-  │    ├─ Gemfile / package.json / Cargo.toml → deps::compare         │ Vec<DependencyChange>
-  │    └─ db/schema.rb                        → schema::compare       │ Vec<SchemaChange>
-  └───────────────────────────────────────────────────────────────────┘
-                                 │ Analysis (純粋なデータ)
-                                 ▼
-                Report::build  (report.rs)
-                   ├─ category::classify     → Category
-                   ├─ FileDiff::stats        → +N -M
-                   └─ concern::detect        → Vec<Concern>
-                         └─ migration::destructive_statements
-                                 │
-                                 ▼
-                render_text / render_json
+```mermaid
+flowchart TD
+    subgraph collect["analysis::collect — I/O はここと git.rs だけ"]
+        NS["git diff --name-status -z BASE...HEAD"] --> PNS["diff::parse_name_status"]
+        U0["git diff -U0 BASE...HEAD"] --> PP["patch::parse_patch"]
+        CF["git merge-base + git cat-file blob<br/>変更前後のファイル全文"] --> DC["deps::compare<br/>Gemfile / package.json / Cargo.toml"]
+        CF --> SC["schema::compare<br/>db/schema.rb"]
+    end
+
+    PNS -- "Vec#lt;FileChange#gt;" --> A
+    PP -- "Vec#lt;FileDiff#gt;" --> A
+    DC -- "Vec#lt;DependencyChange#gt;" --> A
+    SC -- "Vec#lt;SchemaChange#gt;" --> A
+
+    A[("Analysis<br/>純粋なデータ")] --> R
+
+    subgraph build["Report::build"]
+        R["report.rs"] --> CL["category::classify<br/>→ Category"]
+        R --> ST["FileDiff::stats<br/>→ +N -M"]
+        R --> CD["concern::detect<br/>→ Vec#lt;Concern#gt;"]
+        CD --> MG["migration::destructive_statements"]
+    end
+
+    build --> OUT["render_text / render_json"]
 ```
 
 `Analysis` を境に「I/O」と「判定・表示」を分けている。
