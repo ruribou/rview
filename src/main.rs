@@ -1,10 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
 
-use rview::diff::parse_name_status;
-use rview::git;
+use rview::analysis;
 use rview::report::Report;
 
 /// Organize the changes between two git revisions into review categories.
@@ -37,9 +36,11 @@ enum Format {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let raw = git::diff_name_status(&cli.repo, &cli.base, &cli.head)?;
-    let changes = parse_name_status(&raw).context("failed to parse git diff output")?;
-    let report = Report::build(&cli.base, &cli.head, changes);
+    let analysis = analysis::collect(&cli.repo, &cli.base, &cli.head)?;
+    for warning in &analysis.warnings {
+        eprintln!("warning: {warning}");
+    }
+    let report = Report::build(&cli.base, &cli.head, analysis);
 
     match cli.format {
         Format::Text => print!("{}", report.render_text()),

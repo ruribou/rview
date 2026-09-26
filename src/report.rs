@@ -5,15 +5,30 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use crate::analysis::Analysis;
 use crate::category::{Category, classify};
 use crate::concern::{self, Concern};
 use crate::diff::FileChange;
+use crate::patch::Stats;
+
+/// Detail lines longer than this are cut off in text output.
+const MAX_DETAIL_WIDTH: usize = 100;
+
+/// A changed file with its line counts.
+#[derive(Debug, Serialize)]
+pub struct FileEntry {
+    #[serde(flatten)]
+    pub change: FileChange,
+    /// `None` when git reported no content changes (e.g. a pure rename).
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<Stats>,
+}
 
 /// Files belonging to one category.
 #[derive(Debug, Serialize)]
 pub struct Group {
     pub category: Category,
-    pub files: Vec<FileChange>,
+    pub files: Vec<FileEntry>,
 }
 
 /// The full analysis result for a diff range.
@@ -26,22 +41,29 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn build(base: &str, head: &str, changes: Vec<FileChange>) -> Self {
-        let concerns = concern::detect(&changes);
+    pub fn build(base: &str, head: &str, analysis: Analysis) -> Self {
+        let concerns = concern::detect(&analysis);
+        let Analysis {
+            changes, patches, ..
+        } = analysis;
 
         // BTreeMap keeps categories in their declared order.
-        let mut by_category: BTreeMap<Category, Vec<FileChange>> = BTreeMap::new();
+        let mut by_category: BTreeMap<Category, Vec<FileEntry>> = BTreeMap::new();
         for change in changes {
+            let stats = patches
+                .get(&change.path)
+                .map(|p| p.stats())
+                .filter(|s| s.binary || s.additions + s.deletions > 0);
             by_category
                 .entry(classify(&change.path))
                 .or_default()
-                .push(change);
+                .push(FileEntry { change, stats });
         }
 
         let groups = by_category
             .into_iter()
             .map(|(category, mut files)| {
-                files.sort_by(|a, b| a.path.cmp(&b.path));
+                files.sort_by(|a, b| a.change.path.cmp(&b.change.path));
                 Group { category, files }
             })
             .collect();
@@ -71,10 +93,20 @@ impl Report {
         for group in &self.groups {
             let _ = writeln!(out, "\n[{}]", group.category);
             for file in &group.files {
-                let _ = match &file.old_path {
-                    Some(old) => writeln!(out, "  {} {old} -> {}", file.kind.marker(), file.path),
-                    None => writeln!(out, "  {} {}", file.kind.marker(), file.path),
-                };
+                let change = &file.change;
+                let _ = write!(out, "  {} ", change.kind.marker());
+                if let Some(old) = &change.old_path {
+                    let _ = write!(out, "{old} -> ");
+                }
+                let _ = write!(out, "{}", change.path);
+                match file.stats {
+                    Some(Stats { binary: true, .. }) => out.push_str(" (binary)"),
+                    Some(s) => {
+                        let _ = write!(out, " (+{} -{})", s.additions, s.deletions);
+                    }
+                    None => {}
+                }
+                out.push('\n');
             }
         }
 
@@ -82,6 +114,9 @@ impl Report {
             let _ = writeln!(out, "\n⚠ Possible concerns");
             for concern in &self.concerns {
                 let _ = writeln!(out, "  - {concern}");
+                for detail in concern.details() {
+                    let _ = writeln!(out, "      {}", truncate(&detail, MAX_DETAIL_WIDTH));
+                }
             }
         }
 
@@ -93,10 +128,18 @@ impl Report {
     }
 }
 
+fn truncate(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::diff::ChangeKind;
+    use crate::patch::{FileDiff, Hunk};
 
     fn change(kind: ChangeKind, path: &str) -> FileChange {
         FileChange {
@@ -106,17 +149,20 @@ mod tests {
         }
     }
 
+    fn build(changes: Vec<FileChange>, patches: Vec<FileDiff>) -> Report {
+        Report::build("main", "HEAD", Analysis::from_changes(changes, patches))
+    }
+
     #[test]
     fn groups_in_category_order_with_sorted_files() {
-        let report = Report::build(
-            "main",
-            "HEAD",
+        let report = build(
             vec![
                 change(ChangeKind::Modified, "spec/b_spec.rb"),
                 change(ChangeKind::Modified, "app/services/z.rb"),
                 change(ChangeKind::Added, "db/migrate/1.rb"),
                 change(ChangeKind::Modified, "app/services/a.rb"),
             ],
+            vec![],
         );
 
         let categories: Vec<Category> = report.groups.iter().map(|g| g.category).collect();
@@ -128,22 +174,39 @@ mod tests {
         let logic: Vec<&str> = report.groups[1]
             .files
             .iter()
-            .map(|f| f.path.as_str())
+            .map(|f| f.change.path.as_str())
             .collect();
         assert_eq!(logic, vec!["app/services/a.rb", "app/services/z.rb"]);
     }
 
     #[test]
     fn renders_text() {
-        let report = Report::build(
-            "main",
-            "HEAD",
+        let migration = "db/migrate/1_drop.rb";
+        let report = build(
             vec![
-                change(ChangeKind::Added, "db/migrate/1_add.rb"),
+                change(ChangeKind::Added, migration),
                 FileChange {
                     kind: ChangeKind::Renamed,
                     path: "app/services/new.rb".into(),
                     old_path: Some("app/services/old.rb".into()),
+                },
+                change(ChangeKind::Modified, "logo.png"),
+            ],
+            vec![
+                FileDiff {
+                    path: migration.into(),
+                    binary: false,
+                    hunks: vec![Hunk {
+                        old_start: 0,
+                        new_start: 1,
+                        removed: vec![],
+                        added: vec!["    drop_table :sessions".into(), "end".into()],
+                    }],
+                },
+                FileDiff {
+                    path: "logo.png".into(),
+                    binary: true,
+                    hunks: vec![],
                 },
             ],
         );
@@ -152,13 +215,18 @@ mod tests {
 Changes: main...HEAD
 
 [DB]
-  A db/migrate/1_add.rb
+  A db/migrate/1_drop.rb (+2 -0)
 
 [Logic]
   R app/services/old.rb -> app/services/new.rb
 
+[Other]
+  M logo.png (binary)
+
 ⚠ Possible concerns
   - Migration detected
+  - Destructive migration: db/migrate/1_drop.rb
+      drop_table :sessions
   - Code changed without test changes
 ";
         assert_eq!(report.render_text(), expected);
@@ -166,21 +234,39 @@ Changes: main...HEAD
 
     #[test]
     fn renders_empty() {
-        let report = Report::build("main", "HEAD", vec![]);
+        let report = build(vec![], vec![]);
         assert_eq!(report.render_text(), "No changes: main...HEAD\n");
     }
 
     #[test]
     fn renders_json() {
-        let report = Report::build(
-            "main",
-            "HEAD",
+        let report = build(
             vec![change(ChangeKind::Modified, "config/routes.rb")],
+            vec![FileDiff {
+                path: "config/routes.rb".into(),
+                binary: false,
+                hunks: vec![Hunk {
+                    old_start: 1,
+                    new_start: 1,
+                    removed: vec![],
+                    added: vec!["  get :health".into()],
+                }],
+            }],
         );
         let json: serde_json::Value = serde_json::from_str(&report.render_json().unwrap()).unwrap();
 
+        let file = &json["groups"][0]["files"][0];
         assert_eq!(json["groups"][0]["category"], "api");
-        assert_eq!(json["groups"][0]["files"][0]["kind"], "modified");
+        assert_eq!(file["kind"], "modified");
+        assert_eq!(file["additions"], 1);
+        assert_eq!(file["deletions"], 0);
         assert_eq!(json["concerns"][0]["kind"], "routes_changed");
+        assert_eq!(json["concerns"][0]["added"][0], "get :health");
+    }
+
+    #[test]
+    fn truncates_long_details() {
+        assert_eq!(truncate("abcdef", 3), "abc…");
+        assert_eq!(truncate("日本語", 3), "日本語");
     }
 }

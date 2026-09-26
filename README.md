@@ -52,32 +52,43 @@ rview --format json      # JSON で出力 (LLM やスクリプト向け)
 Changes: main...HEAD
 
 [DB]
-  A db/migrate/20260926_add_status_to_users.rb
-  M db/schema.rb
+  A db/migrate/20260926_add_status_to_users.rb (+6 -0)
+  M db/schema.rb (+2 -2)
 
 [API]
-  M app/controllers/api/users_controller.rb
-  M config/routes.rb
+  A app/controllers/api/users_controller.rb (+1 -0)
+  M config/routes.rb (+1 -1)
 
 [Logic]
-  D app/services/old_service.rb
-  M app/services/user_service.rb
+  D app/services/old_service.rb (+0 -1)
+  M app/services/user_service.rb (+3 -1)
 
 [Test]
-  M spec/services/user_service_spec.rb
+  A spec/services/user_service_spec.rb (+1 -0)
 
 [Config]
-  M config/application.rb
+  M Gemfile (+2 -2)
+  M config/application.rb (+1 -1)
 
 ⚠ Possible concerns
   - Migration detected
-  - DB schema changed
-  - API route changed
+  - Destructive migration: db/migrate/20260926_add_status_to_users.rb
+      remove_column :users, :legacy_flag, :string
+  - DB schema changed (tables or columns removed)
+      - column users.legacy_flag
+      + column users.status
+  - API route changed (routes removed)
+      - get :legacy_status
+      + resources :users, only: [:index, :update]
+  - Dependencies changed (Gemfile)
+      - rack-cors *
+      ~ rails 7.1.0 → 7.2.0
+      + sidekiq ~> 7.0
   - 1 file(s) deleted
 ```
 
-各行の先頭は変更種別 (`A` Added / `M` Modified / `D` Deleted / `R` Renamed / `C` Copied / `T` TypeChanged)。
-リネームは `R old/path -> new/path` と表示される。
+各行の先頭は変更種別 (`A` Added / `M` Modified / `D` Deleted / `R` Renamed / `C` Copied / `T` TypeChanged)、
+末尾は追加・削除行数。リネームは `R old/path -> new/path`、バイナリは `(binary)` と表示される。
 
 ### 分類ルール
 
@@ -95,14 +106,16 @@ Test → DB → API → Logic → Config の順に評価し、最初にマッチ
 
 ### Possible concerns
 
-| 表示 | 条件 |
-| --- | --- |
-| Migration detected | マイグレーションファイルの追加・変更 |
-| DB schema changed | `db/schema.rb` などの変更 |
-| API route changed | `config/routes.rb` の変更 |
-| Dependencies changed | `Gemfile.lock`, `package.json`, `Cargo.toml` などの変更 |
-| N file(s) deleted | ファイル削除 |
-| Code changed without test changes | Logic / API が変わったのにテストの変更がない |
+| 表示 | 条件 | 詳細として表示されるもの |
+| --- | --- | --- |
+| Migration detected | マイグレーションファイルの追加・変更 | |
+| Destructive migration | マイグレーションに `remove_column` / `drop_table` / `rename_column` / `DROP COLUMN` / Django の `RemoveField` などが含まれる | 該当行 |
+| DB schema changed | `db/schema.rb` などの変更 | `db/schema.rb` を変更前後でパースして求めたテーブル・カラムの増減 |
+| API route changed | `config/routes.rb` の変更 | 追加・削除されたルート定義行 |
+| Dependencies changed | `Gemfile`, `package.json`, `Cargo.toml`, ロックファイルなどの変更 | マニフェストを変更前後でパースして求めた依存の追加・削除・バージョン変更 |
+| Production config changed | `config/environments/production*`, `config/credentials*`, `.env.production*` の変更 | ファイル一覧 |
+| N file(s) deleted | ファイル削除 | |
+| Code changed without test changes | Logic / API が変わったのにテストの変更がない | |
 
 設計の詳細は [docs/design.md](docs/design.md) を参照。
 
@@ -136,10 +149,11 @@ Test → DB → API → Logic → Config の順に評価し、最初にマッチ
 ## 技術スタック
 
 - Rust
-- Git (`git diff --name-status -z -M` を `std::process::Command` で実行)
+- Git (`git diff --name-status -z` / `git diff -U0` / `git cat-file` を `std::process::Command` で実行)
 - [`clap`](https://crates.io/crates/clap) — CLI引数解析
 - [`thiserror`](https://crates.io/crates/thiserror) / [`anyhow`](https://crates.io/crates/anyhow) — エラー処理
-- [`serde`](https://crates.io/crates/serde) / [`serde_json`](https://crates.io/crates/serde_json) — JSON出力
+- [`serde`](https://crates.io/crates/serde) / [`serde_json`](https://crates.io/crates/serde_json) — JSON出力、`package.json` の解析
+- [`toml`](https://crates.io/crates/toml) — `Cargo.toml` の解析
 
 ## Rust学習としての目的
 
@@ -167,17 +181,28 @@ Test → DB → API → Logic → Config の順に評価し、最初にマッチ
 
 Gitの変更ファイルを取得して分類する。
 
-```text
-Git → diff取得 → parse → categorize → terminal output
+```mermaid
+flowchart LR
+    Git --> D["diff取得"] --> P["parse"] --> C["categorize"] --> O["terminal output"]
 ```
 
-### Phase 2 — Diff Analyzer
+### Phase 2 — Diff Analyzer ✅
 
 ファイル名だけでなくdiff本文を解析し、Migration追加・カラム削除・Routes変更・Dependency変更・Config変更などを検出する。
 
 ### Phase 3 — Framework Awareness
 
 Railsなどのフレームワーク構造を理解し、Controller → Service → Model → Test といった関連ファイルを探索する。
+
+```mermaid
+flowchart LR
+    Controller --> Service --> Model
+    Controller -.- CS["Controller spec"]
+    Service -.- SS["Service spec"]
+    Model -.- MS["Model spec"]
+```
+
+これにより、関連ファイルの変更状況を次のように提示できるようにする。
 
 ```text
 Controller changed
@@ -198,8 +223,9 @@ Pull Requestの変更を取得し、ローカルと同じ解析処理を適用�
 
 Pull Request全体をそのままLLMへ送信するのではなく、
 
-```text
-Git Diff → Rustによる解析 → 変更のグルーピング → 重要ファイル抽出 → 関連diff抽出 → LLM
+```mermaid
+flowchart LR
+    G["Git Diff"] --> R["Rustによる解析"] --> Gr["変更のグルーピング"] --> I["重要ファイル抽出"] --> E["関連diff抽出"] --> L["LLM"]
 ```
 
 という構成で、LLMへ渡す情報量を減らしながらレビュー精度を高める。
